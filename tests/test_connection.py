@@ -42,7 +42,7 @@ from asyncssh.constants import MSG_CHANNEL_OPEN, MSG_CHANNEL_OPEN_CONFIRMATION
 from asyncssh.constants import MSG_CHANNEL_OPEN_FAILURE, MSG_CHANNEL_DATA
 from asyncssh.compression import get_compression_algs
 from asyncssh.crypto.cipher import GCMCipher
-from asyncssh.encryption import get_encryption_algs
+from asyncssh.encryption import get_encryption_algs, get_default_encryption_algs
 from asyncssh.kex import get_kex_algs
 from asyncssh.kex_dh import MSG_KEX_ECDH_REPLY
 from asyncssh.mac import _HMAC, _mac_handler, get_mac_algs
@@ -1125,6 +1125,55 @@ class _TestConnection(ServerTestCase):
                     pass
 
     @asynctest
+    async def test_default_encryption_order_prefers_gcm(self):
+        """Test the default negotiation order prefers the fast GCM AEADs
+
+        The GCM ciphers reuse a single key schedule per connection and must
+        be negotiated ahead of the higher per-packet-cost chacha20
+        construction while all of them remain available.
+        """
+
+        defaults = get_default_encryption_algs()
+
+        self.assertEqual(defaults[:3], [
+            b'aes256-gcm@openssh.com',
+            b'aes128-gcm@openssh.com',
+            b'chacha20-poly1305@openssh.com'
+        ])
+        self.assertIn(b'chacha20-poly1305@openssh.com', defaults)
+
+        # Two default peers negotiate the first common algorithm, which must
+        # now be an AES-GCM AEAD rather than chacha20.
+        async with self.connect() as conn:
+            self.assertIn(conn._enc_alg_cs,
+                          (b'aes256-gcm@openssh.com',
+                           b'aes128-gcm@openssh.com'))
+
+    @asynctest
+    async def test_encryption_fallback_to_restricted_client_list(self):
+        """Test negotiation still works when the client restricts its list
+
+        The reordering must not drop any algorithm: a client asking only for
+        chacha20 or only for CTR must still connect, and client preference
+        decides the winner when several offered algs are held in common.
+        """
+
+        cases = (
+            (['chacha20-poly1305@openssh.com'],
+             b'chacha20-poly1305@openssh.com'),
+            (['aes128-ctr'], b'aes128-ctr'),
+            (['aes128-ctr', 'aes128-gcm@openssh.com'], b'aes128-ctr'),
+            (['aes128-gcm@openssh.com', 'aes128-ctr'],
+             b'aes128-gcm@openssh.com'),
+        )
+
+        for client_algs, expected in cases:
+            with self.subTest(client_algs=client_algs):
+                async with self.connect(
+                        encryption_algs=client_algs) as conn:
+                    self.assertEqual(conn._enc_alg_cs, expected)
+
+    @asynctest
     async def test_empty_encryption_algs(self):
         """Test connecting with an empty list of encryption algorithms"""
 
@@ -2000,6 +2049,70 @@ class _TestConnectionEmptyServerMACAlgs(ServerTestCase):
 
         async with self.connect():
             pass
+
+
+class _TestConnectionRestrictedServerAlgs(ServerTestCase):
+    """Unit test interop with a server advertising a restricted cipher list
+
+    Models a standards-compliant peer (e.g. an OpenSSH build with a fixed
+    policy) that offers only some of the algorithms AsyncSSH now defaults to.
+    Negotiation must always settle on a mutually supported cipher, proving
+    the default-order change breaks no interoperability.
+    """
+
+    _server_enc_algs = ['aes256-gcm@openssh.com', 'aes128-ctr']
+
+    @classmethod
+    async def start_server(cls):
+        """Start an SSH server advertising a restricted cipher list"""
+
+        return await cls.create_server(
+            _TunnelServer, encryption_algs=cls._server_enc_algs)
+
+    @asynctest
+    async def test_default_client_negotiates_common_gcm(self):
+        """Default client and restricted server pick the shared GCM AEAD"""
+
+        async with self.connect() as conn:
+            self.assertEqual(conn._enc_alg_cs,
+                             b'aes256-gcm@openssh.com')
+
+    @asynctest
+    async def test_client_without_gcm_falls_back_to_ctr(self):
+        """Client lacking GCM still interoperates over the shared CTR"""
+
+        async with self.connect(
+                encryption_algs=['aes128-ctr']) as conn:
+            self.assertEqual(conn._enc_alg_cs, b'aes128-ctr')
+
+    @asynctest
+    async def test_no_common_alg_fails_cleanly(self):
+        """Disjoint algorithm lists raise rather than silently misconnect"""
+
+        with self.assertRaises(asyncssh.KeyExchangeFailed):
+            await self.connect(
+                encryption_algs=['chacha20-poly1305@openssh.com'])
+
+
+class _TestConnectionChachaOnlyServer(ServerTestCase):
+    """Unit test interop with a server that offers only chacha20"""
+
+    @classmethod
+    async def start_server(cls):
+        """Start an SSH server advertising only chacha20-poly1305"""
+
+        return await cls.create_server(
+            _TunnelServer,
+            encryption_algs=['chacha20-poly1305@openssh.com'],
+            mac_algs=[])
+
+    @asynctest
+    async def test_default_client_falls_back_to_chacha(self):
+        """A default client must still negotiate chacha20 with this peer"""
+
+        async with self.connect() as conn:
+            self.assertEqual(conn._enc_alg_cs,
+                             b'chacha20-poly1305@openssh.com')
 
 
 class _TestConnectionAsyncAcceptor(ServerTestCase):

@@ -304,12 +304,20 @@ def get_encryption(enc_alg: bytes, key: bytes, iv: bytes, mac_alg: bytes = b'',
 
 
 _enc_alg_list = (
-    (b'chacha20-poly1305@openssh.com', ChachaEncryption,
-     'chacha20-poly1305', True),
+    # The GCM AEADs are listed before chacha20-poly1305. Both provide
+    # authenticated encryption, but the PyCA chacha20-poly1305 construction
+    # requires multiple per-packet cipher setups while GCM reuses a single
+    # key schedule for the lifetime of a connection (see GCMCipher), giving
+    # GCM a substantially lower per-packet cost. AES-GCM is also hardware
+    # accelerated (AES-NI) on the common gateway/server CPUs. chacha20
+    # remains available and is still negotiated with peers that prefer it
+    # or lack AES hardware support, so interoperability is unchanged.
     (b'aes256-gcm@openssh.com',        GCMEncryption,
      'aes256-gcm',        True),
     (b'aes128-gcm@openssh.com',        GCMEncryption,
      'aes128-gcm',        True),
+    (b'chacha20-poly1305@openssh.com', ChachaEncryption,
+     'chacha20-poly1305', True),
     (b'aes256-ctr',                    BasicEncryption,
      'aes256-ctr',        True),
     (b'aes192-ctr',                    BasicEncryption,

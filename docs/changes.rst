@@ -3,6 +3,27 @@
 Change Log
 ==========
 
+Release 2.24.2 (under development)
+----------------------------------
+
+* Improved the per-packet performance of the AES-GCM ciphers
+  (``aes128-gcm@openssh.com`` and ``aes256-gcm@openssh.com``) by
+  constructing the underlying ``AESGCM`` key schedule once per
+  connection and reusing it across packets instead of rerunning the
+  AES key expansion on every packet. This roughly halves the per-packet
+  overhead for small packets and leaves authenticated GCM no slower
+  than the CTR + HMAC combination it replaces. The on-the-wire packet
+  format is unchanged, so interoperability with standards-compliant
+  SSH implementations is preserved.
+
+* Moved the AES-GCM ciphers ahead of ``chacha20-poly1305@openssh.com``
+  in the default encryption algorithm order. Both provide authenticated
+  encryption, but GCM now has a substantially lower per-packet cost and
+  is hardware accelerated (AES-NI) on common server CPUs. All previously
+  supported algorithms remain available and are still negotiated with
+  peers that prefer or require them, so existing connectivity and
+  explicit algorithm selections are unaffected.
+
 Release 2.24.1 (3 Oct 2026)
 ---------------------------
 

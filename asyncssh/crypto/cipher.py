@@ -97,7 +97,12 @@ class GCMCipher:
 
     def __init__(self, cipher_name: str, key: bytes, iv: bytes):
         self._cipher = _cipher_algs[cipher_name][0]
-        self._key = key
+
+        # The AESGCM object holds the key schedule, which is invariant for
+        # the lifetime of an SSH connection. Constructing it once and reusing
+        # it across packets avoids a per-packet key expansion that otherwise
+        # dominates the cost of small packets (see benchmarks/).
+        self._aesgcm = AESGCM(key)
         self._iv = iv
 
     def _update_iv(self) -> None:
@@ -111,7 +116,7 @@ class GCMCipher:
                          data: bytes) -> Tuple[bytes, bytes]:
         """Encrypt and sign a block of data"""
 
-        data = AESGCM(self._key).encrypt(self._iv, data, header)
+        data = self._aesgcm.encrypt(self._iv, data, header)
 
         self._update_iv()
 
@@ -123,7 +128,7 @@ class GCMCipher:
 
         try:
             decrypted_data: Optional[bytes] = \
-                AESGCM(self._key).decrypt(self._iv, data + mac, header)
+                self._aesgcm.decrypt(self._iv, data + mac, header)
         except InvalidTag:
             decrypted_data = None
 
